@@ -286,8 +286,8 @@ if __name__ == '__main__':
                         help="是否生成基因序列，建议设置基因型缺失时的替代符号，默认用空格代替。可选参数：True,False")
     parser.add_argument('--with_limited_mem', type=str2bool, default=True,
                         help="内存的使用策略。True尽量少的利用内存(速度相对慢一些)，False尽量多的利用内存(速度相对快一些)。可选参数：True,False")
-    parser.add_argument('--with_csv_chunksize', type=int, default=1000,
-                        help="设置chunksize，控制csv分块读取时的行数。面对超大文件时可以有效降低内存使用。设置过大会延长加载时间")
+    parser.add_argument('--with_chunksize', type=int, default=1000,
+                        help="设置chunksize，控制分块读取时的行数。面对超大文件时可以有效降低内存使用。设置过大会延长加载时间")
     parser.add_argument('--parallel_jobs', type=int, default=4,
                         help="并行操作使用的进程数，设置1代表不并行。由于磁盘读取速度的限制。建议这里不要设置超过8")
     parser.add_argument('--genfile_type', type=str, default='phylib',
