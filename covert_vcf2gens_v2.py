@@ -251,7 +251,7 @@ def line_process(line):
 
 def covert_vcf2csv(opt):
     '''
-    根据参数设置，解析数据
+    根据参数设置，解析数据。并生成csv文件
     :param opt: 使用的参数
     :return:
     '''
@@ -289,7 +289,8 @@ if __name__ == '__main__':
     parser.add_argument('--with_chunksize', type=int, default=1000,
                         help="设置chunksize，控制分块读取时的行数。面对超大文件时可以有效降低内存使用。设置过大会延长加载时间")
     parser.add_argument('--parallel_jobs', type=int, default=4,
-                        help="并行操作使用的进程数，设置1代表不并行。由于磁盘读取速度的限制。建议这里不要设置超过8")
+                        help="并行操作使用的进程数，设置1代表不并行。由于磁盘读取速度的限制,建议这里不要设置超过8。"
+                             "如果采用了NVME的SSD，请检查线程的CPU利用率，CPU利用率低时，增加chunksize的大小，CPU利用率100%，可以适当增加parallel_jobs")
     parser.add_argument('--genfile_type', type=str, default='phylib',
                         help="生成的基因序列文件格式。可选有'txt'、'phylib'")
 
