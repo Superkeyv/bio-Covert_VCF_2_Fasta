@@ -6,8 +6,10 @@ import os
 from progressbar import ProgressBar
 from ParallelLineProcess.LinePrcessor import ParallelLine
 import multiprocessing as mp
+import shutil
 
 print_prefix = "STATUS -- "
+tmp_file_dir = 'tmp'
 
 # 碱基配对字典
 BasePair = {'A': 'T',
@@ -47,7 +49,7 @@ def proc_col_of_pdchunk(data):
     ck_col = data[1]
 
     # 追加写文件
-    f = open('tmp/{}.genseries'.format(col_name), 'a+')
+    f = open('{}/{}.genseries'.format(tmp_file_dir, col_name), 'a+')
     for GT in ck_col.values:
         f.write(GT)
     f.close()  # 文件变动写入磁盘
@@ -86,13 +88,14 @@ def covert_csv2phylib(opt):
             for i in range(1, opt.sample_size + 1):
                 sample_list.append('s{}'.format(i))
 
-            # 同时创建对应文件
-            if (not os.path.exists('tmp')):
-                os.mkdir('tmp')
+            # 同时创建缓存文件夹
+            print(print_prefix + '缓存文件夹为:{}'.format(tmp_file_dir))
+            if (not os.path.exists(tmp_file_dir)):
+                os.mkdir(tmp_file_dir)
 
             # 考虑到内存太小，这里使用缓存文件作为中间处理
             for colname in sample_list:
-                f = open('tmp/{}.genseries'.format(colname), 'w')
+                f = open('{}/{}.genseries'.format(tmp_file_dir, colname), 'w')
                 f.close()
 
             # 处理进度相关
@@ -129,7 +132,7 @@ def covert_csv2phylib(opt):
                         # 处理1个chunk的内容，将基因序列写入磁盘
                         ck_col = ck[sample_name]
                         # 追加写文件
-                        f = open('tmp/{}.genseries'.format(sample_name), 'a+')
+                        f = open('{}/{}.genseries'.format(tmp_file_dir, sample_name), 'a+')
                         for GT in ck_col.values:
                             f.write(GT)
                         f.close()  # 文件变动写入磁盘
@@ -147,7 +150,7 @@ def covert_csv2phylib(opt):
             progressbar.start()
             for i, colname in enumerate(sample_list):
                 progressbar.update(i)
-                sX_f = open('tmp/{}.genseries'.format(colname), 'r')
+                sX_f = open('{}/{}.genseries'.format(tmp_file_dir, colname), 'r')
 
                 if (opt.genfile_type == 'phylib'):
                     genseries_file.write('seq{}\t'.format(i + 1))
@@ -155,6 +158,10 @@ def covert_csv2phylib(opt):
 
             progressbar.finish()
             print(print_prefix + "文件合并完成")
+
+            # 删除缓存文件夹，清理空间
+            print(print_prefix + '清除缓存文件夹: del {}'.format(tmp_file_dir))
+            shutil.rmtree(tmp_file_dir)
 
         else:
             csv_reader = pd.read_csv(opt.file + '.csv')
@@ -290,6 +297,7 @@ if __name__ == '__main__':
 
     ignore_ALTs = opt.ignore_ALTs
     loss_replace = opt.loss_replace
+    tmp_file_dir = '{}-tmp'.format(opt.file)
 
     print(opt)
     if (opt.covert_vcf2csv):
