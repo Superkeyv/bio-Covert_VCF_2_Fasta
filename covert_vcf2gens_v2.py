@@ -107,7 +107,7 @@ def covert_csv2phylib(opt):
             pool = mp.Pool(opt.parallel_jobs)
 
             # 按块读取csv文件，同时输出到对应基因序列中
-            csv_reader = pd.read_csv(opt.file + '.csv', iterator=True, chunksize=opt.with_csv_chunksize)
+            csv_reader = pd.read_csv(opt.file + '.csv', iterator=True, chunksize=opt.with_chunksize)
             for ck in csv_reader:
                 # 估计当前的进度
                 processed_size += ck.size * 3
@@ -258,7 +258,7 @@ def covert_vcf2csv(opt):
     src = open(opt.file, 'r')
     out = open(opt.file + '.csv', 'w')
 
-    pline = ParallelLine(n_jobs=opt.parallel_jobs, chunk_size=opt.with_csv_chunksize, show_process_status=True)
+    pline = ParallelLine(n_jobs=opt.parallel_jobs, chunk_size=opt.with_chunksize, show_process_status=True)
     pline.run_row(input_file=src, output_file=out, order=True, row_func=line_process, use_CRLF=True)
 
 
@@ -276,7 +276,7 @@ def str2bool(v):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(usage="本脚本用于处理vcf数据，最后生成基因序列",
                                      description='示例：python covert_vcf2genseries.py --file sample.vcf gen_series True '
-                                                 '--ignore_ALTs 1 --with_csv_chunksize 10000 --parallel_jobs 4 ')
+                                                 '--ignore_ALTs 1 --with_chunksize 10000 --parallel_jobs 4 ')
     parser.add_argument('--file', type=str, default='sample.vcf', help="需要处理的文件")
     parser.add_argument('--ignore_ALTs', type=int, default='0', help="变异类型超过该值则忽略该行。0表示不忽略")
     parser.add_argument('--loss_replace', type=str, default='-', help="基因型缺失的替代符号，需要用引号包括")
