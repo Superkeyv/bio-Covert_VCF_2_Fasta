@@ -62,129 +62,137 @@ def covert_csv2phylib(opt):
     :param opt: 使用的参数
     :return:
     '''
-    with open(opt.file + '.gen_series.phy', 'w') as genseries_file:
-        print(print_prefix + '正在进行基因序列生成')
+    if opt.genfile_type == 'phylib':
+        genseries_file = open(opt.file + '.gen_series.phy', 'w')
+    elif opt.genfile_type == 'fasta':
+        genseries_file = open(opt.file + '.gen_series.fasta', 'w')
+    else:
+        genseries_file = open(opt.file + '.gen_series.txt', 'w')
 
-        opt.csv_size = os.path.getsize(opt.file + '.csv')
-        print(print_prefix + "csv文件大小: {} bytes".format(opt.csv_size))
+    print(print_prefix + '正在进行基因序列生成')
 
-        # 获取基因长度信息
+    opt.csv_size = os.path.getsize(opt.file + '.csv')
+    print(print_prefix + "csv文件大小: {} bytes".format(opt.csv_size))
+
+    # 获取基因长度信息
+    csv_reader = pd.read_csv(opt.file + '.csv', iterator=True, chunksize=2)
+    title = csv_reader.read(1)
+    opt.sample_size = len(title.columns) - 2
+    csv_reader.close()
+    opt.gen_length = get_file_line_num(opt.file + '.csv')
+
+    if (opt.genfile_type == 'phylib'):
+        # 输出基因相关的数据
+        genseries_file.write('{} {}\n'.format(opt.sample_size, opt.gen_length * 2))
+
+    if (opt.with_limited_mem):
         csv_reader = pd.read_csv(opt.file + '.csv', iterator=True, chunksize=2)
-        title = csv_reader.read(1)
-        opt.sample_size = len(title.columns) - 2
-        csv_reader.close()
-        opt.gen_length = get_file_line_num(opt.file + '.csv')
+        print(print_prefix + '样本总数为:{}, 基因长度:{}'.format(opt.sample_size, opt.gen_length))
 
-        if (opt.genfile_type == 'phylib'):
-            # 输出基因相关的数据
-            genseries_file.write('{} {}\n'.format(opt.sample_size, opt.gen_length * 2))
+        # 样本列表
+        sample_list = []
+        for i in range(1, opt.sample_size + 1):
+            sample_list.append('s{}'.format(i))
 
-        if (opt.with_limited_mem):
-            csv_reader = pd.read_csv(opt.file + '.csv', iterator=True, chunksize=2)
-            print(print_prefix + '样本总数为:{}, 基因长度:{}'.format(opt.sample_size, opt.gen_length))
+        # 同时创建缓存文件夹
+        print(print_prefix + '缓存文件夹为:{}'.format(tmp_file_dir))
+        if (not os.path.exists(tmp_file_dir)):
+            os.mkdir(tmp_file_dir)
 
-            # 样本列表
-            sample_list = []
-            for i in range(1, opt.sample_size + 1):
-                sample_list.append('s{}'.format(i))
+        # 考虑到内存太小，这里使用缓存文件作为中间处理
+        for colname in sample_list:
+            f = open('{}/{}.genseries'.format(tmp_file_dir, colname), 'w')
+            f.close()
 
-            # 同时创建缓存文件夹
-            print(print_prefix + '缓存文件夹为:{}'.format(tmp_file_dir))
-            if (not os.path.exists(tmp_file_dir)):
-                os.mkdir(tmp_file_dir)
+        # 处理进度相关
+        progressbar = ProgressBar(maxval=opt.csv_size)
+        progressbar.start()
+        processed_size = 0
 
-            # 考虑到内存太小，这里使用缓存文件作为中间处理
-            for colname in sample_list:
-                f = open('{}/{}.genseries'.format(tmp_file_dir, colname), 'w')
-                f.close()
+        # 启动进程池
+        pool = mp.Pool(opt.parallel_jobs)
 
-            # 处理进度相关
-            progressbar = ProgressBar(maxval=opt.csv_size)
-            progressbar.start()
-            processed_size = 0
+        # 按块读取csv文件，同时输出到对应基因序列中
+        csv_reader = pd.read_csv(opt.file + '.csv', iterator=True, chunksize=opt.with_chunksize)
+        for ck in csv_reader:
+            # 估计当前的进度
+            processed_size += ck.size * 3
+            progressbar.update(int(processed_size))
 
-            # 启动进程池
-            pool = mp.Pool(opt.parallel_jobs)
+            if (opt.parallel_jobs > 1):
 
-            # 按块读取csv文件，同时输出到对应基因序列中
-            csv_reader = pd.read_csv(opt.file + '.csv', iterator=True, chunksize=opt.with_chunksize)
-            for ck in csv_reader:
-                # 估计当前的进度
-                processed_size += ck.size * 3
-                progressbar.update(int(processed_size))
+                # 将数据包装上列明
+                arg_list = []
+                for sample_name in sample_list:
+                    arg_list.append((sample_name, ck[sample_name]))
 
-                if (opt.parallel_jobs > 1):
+                pool.imap(proc_col_of_pdchunk, arg_list)
 
-                    # 将数据包装上列明
-                    arg_list = []
-                    for sample_name in sample_list:
-                        arg_list.append((sample_name, ck[sample_name]))
+                # Parallel(n_jobs=opt.parallel_jobs)(
+                #     delayed(proc_col_of_pdchunk)(ck[sample_name], sample_name) for sample_name in sample_list
+                # )
 
-                    pool.imap(proc_col_of_pdchunk, arg_list)
+            else:
+                # 将csv的块加载进内存，降低内存使用量
+                for sample_name in sample_list:
+                    # 处理1个chunk的内容，将基因序列写入磁盘
+                    ck_col = ck[sample_name]
+                    # 追加写文件
+                    f = open('{}/{}.genseries'.format(tmp_file_dir, sample_name), 'a+')
+                    for GT in ck_col.values:
+                        f.write(GT)
+                    f.close()  # 文件变动写入磁盘
 
-                    # Parallel(n_jobs=opt.parallel_jobs)(
-                    #     delayed(proc_col_of_pdchunk)(ck[sample_name], sample_name) for sample_name in sample_list
-                    # )
+        # 处理完成
+        progressbar.finish()
 
-                else:
-                    # 将csv的块加载进内存，降低内存使用量
-                    for sample_name in sample_list:
-                        # 处理1个chunk的内容，将基因序列写入磁盘
-                        ck_col = ck[sample_name]
-                        # 追加写文件
-                        f = open('{}/{}.genseries'.format(tmp_file_dir, sample_name), 'a+')
-                        for GT in ck_col.values:
-                            f.write(GT)
-                        f.close()  # 文件变动写入磁盘
+        # 等待各进程完成工作
+        pool.close()
+        pool.join()
 
-            # 处理完成
-            progressbar.finish()
+        # 将所有基因文件合并，并清理tmp文件夹
+        print(print_prefix + "开始合并文件")
+        progressbar = ProgressBar(maxval=len(sample_list))
+        progressbar.start()
+        for i, colname in enumerate(sample_list):
+            progressbar.update(i)
+            sX_f = open('{}/{}.genseries'.format(tmp_file_dir, colname), 'r')
 
-            # 等待各进程完成工作
-            pool.close()
-            pool.join()
+            if (opt.genfile_type == 'phylib'):
+                genseries_file.write('seq{}\t'.format(i + 1))
+            elif opt.genfile_type == 'fasta':
+                genseries_file.write('>s{}\n'.format(colname))
+            genseries_file.write('{}\n'.format(sX_f.readline()))
 
-            # 将所有基因文件合并，并清理tmp文件夹
-            print(print_prefix + "开始合并文件")
-            progressbar = ProgressBar(maxval=len(sample_list))
-            progressbar.start()
-            for i, colname in enumerate(sample_list):
-                progressbar.update(i)
-                sX_f = open('{}/{}.genseries'.format(tmp_file_dir, colname), 'r')
+        progressbar.finish()
+        print(print_prefix + "文件合并完成")
 
-                if (opt.genfile_type == 'phylib'):
-                    genseries_file.write('seq{}\t'.format(i + 1))
-                genseries_file.write('{}\n'.format(sX_f.readline()))
+        # 删除缓存文件夹，清理空间
+        print(print_prefix + '清除缓存文件夹: del {}'.format(tmp_file_dir))
+        shutil.rmtree(tmp_file_dir)
 
-            progressbar.finish()
-            print(print_prefix + "文件合并完成")
+    else:
+        csv_reader = pd.read_csv(opt.file + '.csv')
 
-            # 删除缓存文件夹，清理空间
-            print(print_prefix + '清除缓存文件夹: del {}'.format(tmp_file_dir))
-            shutil.rmtree(tmp_file_dir)
+        if (not hasattr(opt, 'sample_size')):
+            opt.sample_size = len(csv_reader.columns) - 2
+        print(print_prefix + '样本总数为:{}'.format(opt.sample_size))
+        progressbar = ProgressBar(maxval=opt.sample_size)
+        progressbar.start()
 
-        else:
-            csv_reader = pd.read_csv(opt.file + '.csv')
+        for i, col_name in enumerate(csv_reader.columns[2:]):
+            # 更新文件处理进度
+            progressbar.update(i)
 
-            if (not hasattr(opt, 'sample_size')):
-                opt.sample_size = len(csv_reader.columns) - 2
-            print(print_prefix + '样本总数为:{}'.format(opt.sample_size))
-            progressbar = ProgressBar(maxval=opt.sample_size)
-            progressbar.start()
+            col = csv_reader[col_name]
 
-            for i, col_name in enumerate(csv_reader.columns[2:]):
-                # 更新文件处理进度
-                progressbar.update(i)
+            for GT in col.values:
+                genseries_file.write(GT)
+            genseries_file.write('\n')
 
-                col = csv_reader[col_name]
+        progressbar.finish()
 
-                for GT in col.values:
-                    genseries_file.write(GT)
-                genseries_file.write('\n')
-
-            progressbar.finish()
-
-        print(print_prefix + '基因序列生成完毕，序列总数:{}'.format(opt.sample_size))
+    print(print_prefix + '基因序列生成完毕，序列总数:{}'.format(opt.sample_size))
 
 
 ignore_ALTs = 0
@@ -292,7 +300,7 @@ if __name__ == '__main__':
                         help="并行操作使用的进程数，设置1代表不并行。由于磁盘读取速度的限制,建议这里不要设置超过8。"
                              "如果采用了NVME的SSD，请检查线程的CPU利用率，CPU利用率低时，增加chunksize的大小，CPU利用率100%，可以适当增加parallel_jobs")
     parser.add_argument('--genfile_type', type=str, default='phylib',
-                        help="生成的基因序列文件格式。可选有'txt'、'phylib'")
+                        help="生成的基因序列文件格式。可选有'txt'、'phylib'、'fasta'")
 
     opt = parser.parse_args()
 
