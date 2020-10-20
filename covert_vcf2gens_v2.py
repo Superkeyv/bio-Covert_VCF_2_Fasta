@@ -11,11 +11,20 @@ import shutil
 print_prefix = "STATUS -- "
 tmp_file_dir = 'tmp'
 
-# 碱基配对字典
-BasePair = {'A': 'T',
-            'T': 'A',
-            'C': 'G',
-            'G': 'C'}
+# IUPAC碱基编码表
+amb = {"*": "-", "A": "A", "C": "C", "G": "G", "N": "N", "T": "T",
+       "*A": "a", "*C": "c", "*G": "g", "*N": "n", "*T": "t",
+       "AC": "M", "AG": "R", "AN": "a", "AT": "W", "CG": "S",
+       "CN": "c", "CT": "Y", "GN": "g", "GT": "K", "NT": "t",
+       "*AC": "m", "*AG": "r", "*AN": "a", "*AT": "w", "*CG": "s",
+       "*CN": "c", "*CT": "y", "*GN": "g", "*GT": "k", "*NT": "t",
+       "ACG": "V", "ACN": "m", "ACT": "H", "AGN": "r", "AGT": "D",
+       "ANT": "w", "CGN": "s", "CGT": "B", "CNT": "y", "GNT": "k",
+       "*ACG": "v", "*ACN": "m", "*ACT": "h", "*AGN": "r", "*AGT": "d",
+       "*ANT": "w", "*CGN": "s", "*CGT": "b", "*CNT": "y", "*GNT": "k",
+       "ACGN": "v", "ACGT": "N", "ACNT": "h", "AGNT": "d", "CGNT": "b",
+       "*ACGN": "v", "*ACGT": "N", "*ACNT": "h", "*AGNT": "d", "*CGNT": "b",
+       "*ACGNT": "N"}
 
 
 def get_file_line_num(fname):
@@ -116,7 +125,7 @@ def covert_csv2phylib(opt):
         csv_reader = pd.read_csv(opt.file + '.csv', iterator=True, chunksize=opt.with_chunksize)
         for ck in csv_reader:
             # 估计当前的进度
-            processed_size += ck.size * 3
+            processed_size += ck.size * 2
             progressbar.update(int(processed_size))
 
             if (opt.parallel_jobs > 1):
@@ -161,7 +170,7 @@ def covert_csv2phylib(opt):
             if (opt.genfile_type == 'phylib'):
                 genseries_file.write('seq{}\t'.format(i + 1))
             elif opt.genfile_type == 'fasta':
-                genseries_file.write('>s{}\n'.format(colname))
+                genseries_file.write('>{}\n'.format(colname))
             genseries_file.write('{}\n'.format(sX_f.readline()))
 
         progressbar.finish()
@@ -196,7 +205,6 @@ def covert_csv2phylib(opt):
 
 
 ignore_ALTs = 0
-loss_replace = '-'
 
 
 def line_process(line):
@@ -229,30 +237,31 @@ def line_process(line):
     # 记录染色体，SNP位点位置
     row = s_data[0] + ',' + s_data[1]
 
-    # 准备参考碱基与对应碱基
-    REF = s_data[3]
-    RREF = BasePair[REF]
+    # 数值和碱基的对应关系
+    nuc = {
+        '0': s_data[3],
+        '.': 'N',
+    }
+
+    for n, gtype in enumerate(s_data[4].split(',')):
+        nuc[str(n + 1)] = gtype.replace('-', '*')
 
     # 从9列到最后，进行遍历处理
     for i in range(9, len(s_data)):
-        s = s_data[i][0:3]
+        # 获取基因型
+        gentype = [s_data[i][0], s_data[i][2]]
 
-        GT = ''  # 当前样本该位置的基因型
-        if (s == './.'):
-            GT = loss_replace * 2
-        else:
-            # 在没有缺失的情况下，解析基因型
-            if (s[0] == '0'):
-                GT += REF
-            else:
-                GT += RREF
+        GT = []
+        for i in gentype:
+            GT.append(nuc[i])
 
-            if (s[2] == '0'):
-                GT += REF
-            else:
-                GT += RREF
+        # 完成基因组合编码的转换。注意，这里使用set去除GT中的重复项
+        out = amb[''.join(sorted(set(GT)))]
 
-        row += ',' + GT
+        if len(out) is 2:
+            print("a")
+
+        row += ',' + out
 
     return row
 
@@ -287,7 +296,6 @@ if __name__ == '__main__':
                                                  '--ignore_ALTs 1 --with_chunksize 10000 --parallel_jobs 4 ')
     parser.add_argument('--file', type=str, default='sample.vcf', help="需要处理的文件")
     parser.add_argument('--ignore_ALTs', type=int, default='0', help="变异类型超过该值则忽略该行。0表示不忽略")
-    parser.add_argument('--loss_replace', type=str, default='-', help="基因型缺失的替代符号，需要用引号包括")
     parser.add_argument('--covert_vcf2csv', type=str2bool, default=True,
                         help="是否执行covert_vcf2csv部分。如果已经转化出csv文件，设置true可以节省大量时间。可选参数：True,False")
     parser.add_argument('--gen_series', type=str2bool, default=True,
@@ -305,7 +313,6 @@ if __name__ == '__main__':
     opt = parser.parse_args()
 
     ignore_ALTs = opt.ignore_ALTs
-    loss_replace = opt.loss_replace
     tmp_file_dir = '{}-tmp'.format(opt.file)
 
     print(opt)
