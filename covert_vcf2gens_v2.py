@@ -195,6 +195,12 @@ def covert_csv2phylib(opt):
 
             col = csv_reader[col_name]
 
+            # 针对不同格式的需求，写入tag信息
+            if (opt.genfile_type == 'phylib'):
+                genseries_file.write('seq{}\t'.format(i + 1))
+            elif opt.genfile_type == 'fasta':
+                genseries_file.write('>{}\n'.format(col_name))
+
             for GT in col.values:
                 genseries_file.write(GT)
             genseries_file.write('\n')
