@@ -7,7 +7,6 @@ from progressbar import ProgressBar
 from ParallelLineProcess.LinePrcessor import ParallelLine
 import multiprocessing as mp
 import shutil
-import gzip
 
 print_prefix = "STATUS -- "
 tmp_file_dir = 'tmp'
@@ -276,11 +275,9 @@ def covert_vcf2csv(opt):
     :param opt: 使用的参数
     :return:
     '''
-    src = open(opt.file, 'r')
-    out = open(opt.file + '.csv', 'w')
 
     pline = ParallelLine(n_jobs=opt.parallel_jobs, chunk_size=opt.with_chunksize, show_process_status=True)
-    pline.run_row(input_file=src, output_file=out, order=True, row_func=line_process, use_CRLF=True)
+    pline.run_row(input_file_name=opt.file, output_file_name=opt.file+'.csv', order=True, row_func=line_process, use_CRLF=True)
 
 
 def str2bool(v):

@@ -1,5 +1,6 @@
-from multiprocessing import Manager, Process, Pool, Value, Queue, Lock
+from multiprocessing import Process, Pool, Queue
 import os
+import time
 import progressbar as pb
 import re
 import gzip
@@ -37,6 +38,8 @@ class ChunkLoader:
     """
     这个是数据预加载器。按照要求进行数据的加载
     这个程序会维持一个加载队列，当主进程处理其他数据时，会使用另外一个进行继续数据的加载
+
+    todo 1 是否可以增加一个迭代器方式的读取
     """
 
     def __init__(self, input_file_name, chunk_size=1000, use_async=True, with_line_num=False) -> None:
@@ -63,25 +66,27 @@ class ChunkLoader:
 
         # 用于进程间数据共享
         self.ram_cache = Queue(maxsize=1)  # 最大容量为1的队列
-        self.LineNum = Value('l', 0)  # 记录当前读取的行号
+        self.LineNum = 0  # 记录已经传出数据的行号
 
     def __read_a_chunk(self):
         """
         读取一个chunk行的文本。如果已经读取到文件的末尾，那么再次调用本方法将会返回[]
-        :return:
+        读取的行将会清除掉'\n'符号
+
+        :return: 注意，这里的数据不能进行二级包装。这是由于Queue数据的引用方式造成的
         """
-        tmp = []
+        line_datas = []
+        # 对行数据进一步处理
         for i in range(self.chunk_size):
             line = self.infile.readline()
-            if line == '':
+            if line is '':
                 break
-            self.LineNum.value += 1
+            # 清除掉换行符
+            line = line.strip('\r\n')
+            line = line.strip('\n')
+            line_datas.append(line)
 
-            if self.with_line_num:
-                tmp.append((self.LineNum.value, line))
-            else:
-                tmp.append(line)
-        return tmp
+        return line_datas
 
     def __read_async(self):
         """
@@ -130,7 +135,6 @@ class ChunkLoader:
         """返回已经加载好的数据
         :return: 获取行的List形式。如果返回[]，代表数据已经读取完毕
         """
-
         ret = []
 
         # 保证文件读取完毕，不会再次进入循环
@@ -148,12 +152,23 @@ class ChunkLoader:
             # print('read_sync')
             ret = self.read_sync()
 
+        # 判断文件是否读取结束
         if len(ret) is 0:
             self.EOF = True
 
-        return ret
+        # 包装行号
+        tmp = []
+        if self.with_line_num:
+            tmp.append(range(self.LineNum, self.LineNum + len(ret)))
+            tmp.append(ret)
+            self.LineNum += len(ret)
+        else:
+            tmp = ret
+
+        return tmp
 
     def close(self):
+        self.infile.close()
         if hasattr(self, 'process'):
             # 等待process的后续任务做完
             self.process.join()
@@ -223,6 +238,25 @@ def col_proc(data):
     return data
 
 
+def file_line_count(fname):
+    '''
+    用于确认文件有多少行
+    :param f: 所打开的文件名
+    :return: 该文件存在的行数
+    '''
+    line_num = 0
+    with open(fname, 'r') as f:
+        while (True):
+            buf = f.read(4 * 1024 * 1024)
+            if (buf == ''):
+                break
+
+            line_num += buf.count('\n')
+
+        f.close()
+    return line_num
+
+
 class ParallelLine:
     """
     这是文本文件的并行化处理器。
@@ -248,19 +282,22 @@ class ParallelLine:
         self.__show_process_status = show_process_status
         self.__file_cache = {}  # 文件缓存。每个线程都可以创建自己的文件缓存。字典类型。通过进程号对应
 
-    def run_row(self, input_file, output_file=None, row_func=line_proc, with_line_num=False, order=True,
+    def run_row(self, input_file_name, output_file_name=None, row_func=line_proc, with_line_num=False, order=True,
                 use_CRLF=False):
         """
         对文件的行并行化处理，并最终返回
 
-        :param in_file: 待处理的文件
+        :param in_file: 待处理的文件名。使用文件名的形式，可以提供多次读取的优势
         :param output_file: 处理完毕需要输出的文件。默认为None，代表文件将会输出到内存中。如果为None，那么数据将会以list的方式，逐行存放，并最后返回
-        :param row_func: 用于行处理的方法。方法定义为 def func(data): -> ProcessedLine。其中data部分包含行号信息。如果需要抛弃该行，则返回None或者不返回即可
+        :param row_func: 用于行处理的方法。方法定义为 def func(data): -> ProcessedLine。其中data部分包含行号信息
         :param with_line_num: 传递给line_func的数据是否包括行号。如果包括行号，那么传递给line_func的数据为 (line_num, line_data)
         :param order: 是否按照有序的方式处理数据。True保证处理的顺序，False允许乱序处理
         :param use_CRLF: 换行模式，由于默认在Linux上运行，换行模式LF为'\n'。在win上，所采用的换行模式CRLF为'\r\n'，即回车换行
         :return: 返回经过处理的结果。如果outfile!=None，那么处理的结果将会直接写入到文件中; 如果outfile=None，这意味着会返回处理List，其中包括经过处理后的所有行
         """
+
+        # 在文件内部打开
+        output_file = open(output_file_name, 'w')
 
         #### 公共展示信息补充 ####
         __cache_mode = 'File'
@@ -269,13 +306,13 @@ class ParallelLine:
 
         # 获取输入文夹的大小。
         __in_file_size = 0
-        if input_file.name.endswith('.vcf'):
-            __in_file_size = os.path.getsize(input_file.name)
-        elif input_file.name.endswith('.gz'):
-            __in_file_size = assume_gzip_origin_size(input_file.name)
+        if input_file_name.endswith('.vcf'):
+            __in_file_size = os.path.getsize(input_file_name)
+        elif input_file_name.endswith('.gz'):
+            __in_file_size = assume_gzip_origin_size(input_file_name)
 
         # 初始化线程池，包括1个预加载器、n_jobs个数据处理器、主进程负责数据的分发、收集和写入
-        chunk_loader = ChunkLoader(input_file.name, chunk_size=self.chunk_size, use_async=True,
+        chunk_loader = ChunkLoader(input_file_name, chunk_size=self.chunk_size, use_async=True,
                                    with_line_num=with_line_num)
         pool = Pool(self.n_jobs)
 
@@ -287,7 +324,7 @@ class ParallelLine:
         # 列出运行配置
         print("ParallelLine使用配置:")
         prefix = "@run_row:\t"
-        print(prefix + "顺序/乱序处理={}".format(order))
+        print(prefix + "顺序处理={}".format(order))
         print(prefix + "n_jobs={}".format(self.n_jobs))
         print(prefix + "pool_chunksize={}".format(self.__pool_chunk_size))
         print(prefix + "缓存模式={}".format(__cache_mode))
@@ -313,16 +350,16 @@ class ParallelLine:
                         self.load_file_size += len(line[1])
                     else:
                         self.load_file_size += len(line)
-
-                # 避免超出progressbar的范围
-                if self.load_file_size > __in_file_size:
-                    self.load_file_size = __in_file_size
-                self.progressbar.update(self.load_file_size)
+                if self.__show_process_status:
+                    if self.load_file_size > __in_file_size:
+                        self.load_file_size = __in_file_size
+                    self.progressbar.update(self.load_file_size)
 
             # 加快获取文件末尾的效率
             if len(data) is 0:
                 print("处理完毕")
-                self.progressbar.finish()
+                if self.__show_process_status:
+                    self.progressbar.finish()
                 break
 
             # 处理
@@ -349,10 +386,14 @@ class ParallelLine:
         chunk_loader.close()
         pool.close()
         pool.join()
+
+        # 关闭打开的文件
+        output_file.close()
         if __cache_mode == 'Mem':
             return ret
 
-    def __run_col(self, input_file, output_file=None, with_cache_file=True, chunk2col_func=chunk2col, col_func=col_proc,
+    def __run_col(self, input_file_name, output_file_name=None, with_cache_file=True, chunk2col_func=chunk2col,
+                  col_func=col_proc,
                   with_column_num=True, use_CRLF=False):
         """
         对文件的列进行处理。（有列意味着必须有列的分割符号，这里需要写一个行构成的块如何转化为列的处理方法)
@@ -363,9 +404,13 @@ class ParallelLine:
         这个方法下，如果不设置输出文件
 
         todo 该方法还未完善，不建议使用
+        todo 1 使用外部行拆分程序，进行行切割
+        todo 2 并行方式集中在多列的并行化处理方面，借助chunkloader多次加载文件，在一个文件读取周期内处理多行。将多行的处理结果批次写入系统
+        todo 3 存在模式2,一次读取文件，完成所有列的处理。可以参考各列写缓存的思路，最终将缓存合并，构成最终文件
+        todo 4 需要准备3个方法，行的分割方法，chunk行块的处理方法，chunk行块返回结果的合并方法。（预处理、处理、后处理）
 
-        :param in_file: 待处理的文件
-        :param output_file: 处理完毕需要输出的文件。默认为None，代表文件将会输出到内存中。如果为None，那么数据将会以list的方式，逐行存放，并最后返回
+        :param input_file_name: 待处理的文件名
+        :param output_file_name: 处理完毕需要输出的文件名。默认为None，代表文件将会输出到内存中。如果为None，那么数据将会以list的方式，逐行存放，并最后返回
         :param with_cache_file: 由于文件体积极大的时候，无法直接将列数据连续存放。因此需要考虑使用临时文件存放的方式
         :param chunk2col_func: 将一个块中的行数据转换切分为列的方式存放
         :param col_func: 用于列数据处理的方法。每次一个列给该方法，列带有对应的列号。得到的参数结构为(col_num, col_value)。返回数据时要求结构为(col_num,pd_col_value)
@@ -374,11 +419,14 @@ class ParallelLine:
         :return: 返回经过处理的结果。如果outfile!=None，那么处理的结果将会直接写入到文件中; 如果outfile=None，这意味着会返回处理List，其中包括经过处理后的所有行
         :return:
         """
-
+        input_file = open(input_file_name, 'r')
+        output_file = None
         #### 公共展示信息补充 ####
         __cache_mode = 'File'
-        if output_file is None:
+        if output_file_name is None:
             __cache_mode = 'Mem'  # 如果没有打开的输出文件，将使用内存作为缓存区
+        else:
+            output_file = open(output_file_name, 'w')
 
         if __cache_mode is 'File':
             # 创建缓存文件夹
@@ -389,7 +437,7 @@ class ParallelLine:
         __in_file_size = os.path.getsize(input_file.name)
 
         # 初始化线程池，包括1个预加载器、n_jobs个数据处理器、主进程负责数据的分发、收集和写入
-        chunk_loader = ChunkLoader(input_file, chunk_size=self.chunk_size, use_async=True,
+        chunk_loader = ChunkLoader(input_file_name, chunk_size=self.chunk_size, use_async=True,
                                    with_line_num=with_column_num)
         pool = Pool(self.n_jobs)
 
@@ -458,7 +506,7 @@ class ParallelLine:
         chunk_loader.close()
         pool.close()
         pool.join()
-        if __cache_mode == 'Mem':
+        if __cache_mode is 'Mem':
             # 将ret中的数据进行整合，最终符合列关系
             tmp = []
             # 构造所有的列
@@ -490,9 +538,32 @@ class ParallelLine:
             # 对应处理__cache_mode == 'file'
             for i in range(1, ret_cols + 1):
                 with open('tmp/{}'.format(i), 'r'):
-                    output_file.write()
+                    output_file.write('\n')
 
+        input_file.close()
+        if output_file != None:
+            output_file.close()
 
-# Press the green button in the gutter to run the script.
-if __name__ == '__main__':
-    print("hi")
+    def __run_block(self, input_file_name, output_file_name, block_size=(0, 0), split_func=chunk2col,
+                    block_func=col_proc, use_CRLF=False):
+        """
+        这个是新的并行处理思路。内容包括数据的读取，任务分发，结果聚合写入。
+        核心思想是突出数据的块化处理 ，将data_loader的chunk块进一步按照列进行切分。得到许多小block，每个小block结构为([row_nums],[col_nums],[data])
+
+        :param input_file_name: 待处理的文件名称
+        :param output_file_name: 结果输出的文件名
+        :param block_size: 将表格拆分成的block大小
+        :param split_func: 每一行数据的具体拆分方法
+        :param block_func: 每一个block的处理方法
+        :param use_CRLF: 写出数据是否采用CRLF方式进行换行
+        :return:
+        """
+
+        #### 参数初始化 ####
+        line_breaker = '\n'
+        if use_CRLF:
+            line_breaker = '\r\n'
+
+    # Press the green button in the gutter to run the script.
+    if __name__ == '__main__':
+        print("hi")
