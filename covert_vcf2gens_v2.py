@@ -264,9 +264,6 @@ def line_process(line):
         # 完成基因组合编码的转换。注意，这里使用set去除GT中的重复项
         out = amb[''.join(sorted(set(GT)))]
 
-        if len(out) is 2:
-            print("a")
-
         row += ',' + out
 
     return row
