@@ -7,6 +7,7 @@ from progressbar import ProgressBar
 from ParallelLineProcess.LinePrcessor import ParallelLine
 import multiprocessing as mp
 import shutil
+import gzip
 
 print_prefix = "STATUS -- "
 tmp_file_dir = 'tmp'

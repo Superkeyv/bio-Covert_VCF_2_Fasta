@@ -2,6 +2,35 @@ from multiprocessing import Manager, Process, Pool, Value, Queue, Lock
 import os
 import progressbar as pb
 import re
+import gzip
+
+
+def assume_gzip_origin_size(filename, test_bytes=20 * 1024 * 1024):
+    """
+    该函数用于估计gzip文件的原始大小，通过尝试解压20M数据，比对gz文件读取量和解压出数据的字节数。得到近似压缩比
+    通过估算，最后得到gzip文件的近似原始大小
+    :param filename: 需要估计的gz文件路径
+    :param test_bytes: 需要测试解压出字节数，如果输入-1，代表整个文件解压
+    :return:
+    """
+    assert filename.endswith('.gz'), "输入的文件:{}，不是gzip文件".format(filename)
+    file = open(filename, 'rb')
+    gz_file = gzip.GzipFile(fileobj=file)
+
+    gz_file.read(test_bytes)
+
+    s1 = gz_file.tell()
+    if test_bytes == -1:
+        # 这个代表整个压缩文件都解压了
+        gz_file.close()
+        file.close()
+        return s1
+
+    s2 = file.tell()
+    gz_file_size = os.path.getsize(filename)
+    gz_file.close()
+    file.close()
+    return gz_file_size * s1 / s2
 
 
 class ChunkLoader:
@@ -10,18 +39,23 @@ class ChunkLoader:
     这个程序会维持一个加载队列，当主进程处理其他数据时，会使用另外一个进行继续数据的加载
     """
 
-    def __init__(self, infile, chunk_size=1000, use_async=True, with_line_num=False) -> None:
+    def __init__(self, input_file_name, chunk_size=1000, use_async=True, with_line_num=False) -> None:
         """
         数据加载器初始化
-        :param infile: 需要读取的文件
+        :param input_file_name: 需要读取的文件名
         :param chunk_size: 一次加载的行数量
         :param use_async: 是否使用额外线程进行数据的异步加载
         :param with_line_num: 加载的数据List是否包括行号信息，如果True，则返回的List结构为 [(1,"xxx"),(2,"xxx"),(3,"xxx"),...]
         """
 
         # assert (infile.readable(), "文件无法读取")
+        if input_file_name.endswith('.vcf'):
+            self.infile = open(input_file_name, 'r')
+        elif input_file_name.endswith('.gz'):
+            self.infile = gzip.open(input_file_name, 'rt')
+        else:
+            self.infile = open(input_file_name, 'r')
 
-        self.infile = infile
         self.chunk_size = chunk_size
         self.use_async = use_async
         self.EOF = False  # 代表文件已经读取完毕。该项由读取函数处理，从读取完毕得到[]作为标志触发
@@ -221,7 +255,7 @@ class ParallelLine:
 
         :param in_file: 待处理的文件
         :param output_file: 处理完毕需要输出的文件。默认为None，代表文件将会输出到内存中。如果为None，那么数据将会以list的方式，逐行存放，并最后返回
-        :param row_func: 用于行处理的方法。方法定义为 def func(data): -> ProcessedLine。其中data部分包含行号信息
+        :param row_func: 用于行处理的方法。方法定义为 def func(data): -> ProcessedLine。其中data部分包含行号信息。如果需要抛弃该行，则返回None或者不返回即可
         :param with_line_num: 传递给line_func的数据是否包括行号。如果包括行号，那么传递给line_func的数据为 (line_num, line_data)
         :param order: 是否按照有序的方式处理数据。True保证处理的顺序，False允许乱序处理
         :param use_CRLF: 换行模式，由于默认在Linux上运行，换行模式LF为'\n'。在win上，所采用的换行模式CRLF为'\r\n'，即回车换行
@@ -233,11 +267,15 @@ class ParallelLine:
         if output_file is None:
             __cache_mode = 'Mem'  # 如果没有打开的输出文件，将使用内存作为缓存区
 
-        # 获取输入文夹的大小
-        __in_file_size = os.path.getsize(input_file.name)
+        # 获取输入文夹的大小。
+        __in_file_size = 0
+        if input_file.name.endswith('.vcf'):
+            __in_file_size = os.path.getsize(input_file.name)
+        elif input_file.name.endswith('.gz'):
+            __in_file_size = assume_gzip_origin_size(input_file.name)
 
         # 初始化线程池，包括1个预加载器、n_jobs个数据处理器、主进程负责数据的分发、收集和写入
-        chunk_loader = ChunkLoader(input_file, chunk_size=self.chunk_size, use_async=True,
+        chunk_loader = ChunkLoader(input_file.name, chunk_size=self.chunk_size, use_async=True,
                                    with_line_num=with_line_num)
         pool = Pool(self.n_jobs)
 
@@ -275,6 +313,10 @@ class ParallelLine:
                         self.load_file_size += len(line[1])
                     else:
                         self.load_file_size += len(line)
+
+                # 避免超出progressbar的范围
+                if self.load_file_size > __in_file_size:
+                    self.load_file_size = __in_file_size
                 self.progressbar.update(self.load_file_size)
 
             # 加快获取文件末尾的效率
@@ -311,7 +353,7 @@ class ParallelLine:
             return ret
 
     def __run_col(self, input_file, output_file=None, with_cache_file=True, chunk2col_func=chunk2col, col_func=col_proc,
-                with_column_num=True, use_CRLF=False):
+                  with_column_num=True, use_CRLF=False):
         """
         对文件的列进行处理。（有列意味着必须有列的分割符号，这里需要写一个行构成的块如何转化为列的处理方法)
 
@@ -447,7 +489,7 @@ class ParallelLine:
         else:
             # 对应处理__cache_mode == 'file'
             for i in range(1, ret_cols + 1):
-                with open('tmp/{}'.format(i),'r'):
+                with open('tmp/{}'.format(i), 'r'):
                     output_file.write()
 
 
